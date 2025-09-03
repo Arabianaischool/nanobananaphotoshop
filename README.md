@@ -1,10 +1,11 @@
-# nanobananaphotoshop
+# Nano Banana — AI Script for Photoshop
+
 Nano Banana — AI Script for Photoshop
 .# Arabian AI School — Photoshop Nano Banana Script
 
 **A Photoshop script that sends a selected region to Nano Banana (Gemini 2.5 Flash) via OpenRouter and places the generated result back into the document as a new layer.**
 
-This project is maintained by **Arabian AI School / مدرسة الذكاء الاصطناعي**  
+This project is developed by **Arabian AI School / مدرسة الذكاء الاصطناعي**  
 YouTube tutorial : https://youtu.be/VEiRF1CjyEQ
 ---
 
