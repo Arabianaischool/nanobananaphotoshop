@@ -3,10 +3,13 @@
  * Photoshop ExtendScript (JSX)
  *
  * Changes:
- * - Replaced Replicate API calls with OpenRouter chat/completions calls
- * - Uses model: google/gemini-2.5-flash-image-preview:free (Nano Banana)
+ * - API calls with OpenRouter chat/completions calls
  * - Authorization header: Bearer <API_KEY>
  * - Flexible parsing for returned image: supports data:image base64 or an http(s) URL
+ * - Patched for macOS compatibility (base64 commands).
+ * - Improved error reporting to show debug messages directly in alerts.
+ * - Updated model name to match current OpenRouter API specifications.
+ * - Removed non-standard 'modalities' parameter from API payload.
  *
  * Author: BARAA MOHAMED / ARABIAN AI SCHOOL
  */
@@ -18,9 +21,9 @@ var CONFIG = {
     // API key is stored in environment variable / preferences
     API_KEY: getAPIKey(),
 
-    // Model versions (OpenRouter model id for Nano Banana)
+    // Model versions (OpenRouter model id)
     MODELS: {
-        "Nano Banana (مجانا)": "google/gemini-2.5-flash-image-preview:free"
+        "Nano Banana (مجانا)": "google/gemini-2.5-flash-image-preview"
     },
 
     // Polling settings
@@ -220,26 +223,26 @@ function getBase64Command(inputFile, outputFile) {
     if (isWindows) {
         return 'cmd.exe /c certutil -encode "' + inputFile + '" "' + outputFile + '"';
     } else {
-        return 'base64 -i "' + inputFile + '" > "' + outputFile + '"';
+        return '/usr/bin/base64 < "' + inputFile + '" > "' + outputFile + '"';
     }
 }
+
 function openUrl(url) {
     try {
         var isWindows = ($.os.indexOf("Windows") !== -1);
         var isMac = ($.os.indexOf("Mac") !== -1 || $.os.indexOf("Macintosh") !== -1);
         if (isWindows) {
-            // start requires empty title argument ""
             app.system('cmd.exe /c start "" "' + url + '"');
         } else if (isMac) {
             app.system('/usr/bin/open "' + url + '"');
         } else {
-            // linux fallback
             app.system('xdg-open "' + url + '"');
         }
     } catch (e) {
         alert("Could not open URL: " + url + "\n" + e.message);
     }
 }
+
 // ===== UNDO MANAGEMENT =====
 
 function executeWithHistory(operationName, prompt, selectedModel, newDocument, upscale) {
@@ -330,24 +333,20 @@ function createDialog() {
     dialog.newDocCheckbox = dialog.add("checkbox", undefined, "Output to new document");
     dialog.newDocCheckbox.value = false;
 
-// Subscribe text + Open Channel button (replaced upscale checkbox)
-var subscribeGroup = dialog.add("group");
-subscribeGroup.orientation = "row";
-subscribeGroup.alignChildren = ["left","center"];
-subscribeGroup.spacing = 10;
+    var subscribeGroup = dialog.add("group");
+    subscribeGroup.orientation = "row";
+    subscribeGroup.alignChildren = ["left","center"];
+    subscribeGroup.spacing = 10;
 
-// قابل للنقر: نص مع زر لفتح القناة
-var subscribeText = subscribeGroup.add("statictext", undefined, "Subscribe to ARABIAN AI channel on YOUTUBE");
-try {
-    // اجعل النص يبدو كـ رابط (خط مائل/صغير) إن أمكن
-    subscribeText.graphics.font = ScriptUI.newFont(subscribeText.graphics.font.name, ScriptUI.FontStyle.SEMIBOLD, 11);
-} catch (e) {}
+    var subscribeText = subscribeGroup.add("statictext", undefined, "Subscribe to ARABIAN AI channel on YOUTUBE");
+    try {
+        subscribeText.graphics.font = ScriptUI.newFont(subscribeText.graphics.font.name, ScriptUI.FontStyle.SEMIBOLD, 11);
+    } catch (e) {}
 
-var openBtn = subscribeGroup.add("button", undefined, "Open Channel");
-openBtn.onClick = function () {
-    openUrl("https://www.youtube.com/@ArabianAiSchool");
-};
-
+    var openBtn = subscribeGroup.add("button", undefined, "Open Channel");
+    openBtn.onClick = function () {
+        openUrl("https://www.youtube.com/@ArabianAiSchool");
+    };
 
     var buttonGroup = dialog.add("group");
     buttonGroup.alignment = "center";
@@ -374,19 +373,16 @@ function processSelection(prompt, modelName, newDocument, upscale) {
         var doc = app.activeDocument;
         var modelId = CONFIG.MODELS[modelName];
 
-        // Save selection as channel
         var savedSelection = doc.channels.add();
         savedSelection.name = "Flux Selection";
         doc.selection.store(savedSelection);
 
-        // Get bounds
         var bounds = doc.selection.bounds;
         var x1 = Math.round(bounds[0].value);
         var y1 = Math.round(bounds[1].value);
         var x2 = Math.round(bounds[2].value);
         var y2 = Math.round(bounds[3].value);
 
-        // Export selection
         var tempFile = exportSelection(doc, x1, y1, x2, y2);
         if (!tempFile || !tempFile.exists) {
             alert("Could not export selection");
@@ -394,7 +390,6 @@ function processSelection(prompt, modelName, newDocument, upscale) {
             return;
         }
 
-        // Call OpenRouter API
         var resultFile = callOpenRouterAPI(tempFile, prompt, modelId, upscale);
 
         tempFile.remove();
@@ -407,7 +402,6 @@ function processSelection(prompt, modelName, newDocument, upscale) {
             }
             resultFile.remove();
         } else {
-            alert("Could not get result from OpenRouter API");
             savedSelection.remove();
         }
 
@@ -450,11 +444,10 @@ function exportSelection(doc, x1, y1, x2, y2) {
     }
 }
 
-// ===== OpenRouter API integration (replaces Replicate calls) =====
+// ===== OpenRouter API integration =====
 
 function callOpenRouterAPI(imageFile, prompt, modelId, upscale) {
     try {
-        // 1) حوّل الصورة لـ base64
         var base64File = new File(Folder.temp + "/openrouter_base64_" + new Date().getTime() + ".txt");
         var cmd = getBase64Command(imageFile.fsName, base64File.fsName);
         app.system(cmd);
@@ -473,15 +466,14 @@ function callOpenRouterAPI(imageFile, prompt, modelId, upscale) {
 
         var dataUrl = "data:image/jpeg;base64," + base64Data;
 
-        // 2) ابنِ البايلود بالشكل الصحيح (messages[0].content = array of typed parts)
         var payloadFile = new File(Folder.temp + "/openrouter_payload_" + new Date().getTime() + ".json");
         payloadFile.open("w");
 
         var escPrompt = escapeJsonString(prompt);
+        // UPDATED: Removed the non-standard 'modalities' parameter to align with official docs
         var payloadStr =
             '{' +
               '"model":"' + modelId + '",' +
-              '"modalities":["image","text"],' +
               '"messages":[' +
                 '{' +
                   '"role":"user",' +
@@ -496,7 +488,6 @@ function callOpenRouterAPI(imageFile, prompt, modelId, upscale) {
         payloadFile.write(payloadStr);
         payloadFile.close();
 
-        // 3) أرسل الطلب
         var responseFile = new File(Folder.temp + "/openrouter_response_" + new Date().getTime() + ".json");
         var curlCmd = getCurlCommand(
             'curl -s -X POST ' +
@@ -516,14 +507,12 @@ function callOpenRouterAPI(imageFile, prompt, modelId, upscale) {
         responseFile.close();
         responseFile.remove();
 
-        // 4) استخرج الصورة (الـ models تولّدها داخل message.images كـ data URL)
         var resultFile = downloadOpenRouterResult(response);
         if (resultFile) {
             if (upscale) return upscaleImage(resultFile);
             return resultFile;
         }
 
-        // (اختياري) fallback: لو كان فيه id آخذ Poll — أغلب الحالات مش محتاج
         var predictionId = extractPredictionId(response);
         if (predictionId) {
             var polledFile = pollForOpenRouterResult(predictionId);
@@ -533,7 +522,7 @@ function callOpenRouterAPI(imageFile, prompt, modelId, upscale) {
             }
         }
 
-        alert("Unexpected OpenRouter response:\n" + response.substr(0, 800));
+        alert("Could not extract image from OpenRouter response. Full debug details:\n\n" + response);
         return null;
 
     } catch (e) {
@@ -542,15 +531,8 @@ function callOpenRouterAPI(imageFile, prompt, modelId, upscale) {
     }
 }
 
-
 function extractPredictionId(response) {
-    try {
-        var match = response.match(/"id"\s*:\s*"([^"]+)"/);
-        if (match && match[1]) {
-            return match[1];
-        }
-    } catch (e) {}
-    return null;
+    return null; // منع الـ polling — الاستجابة الأولى بتكون فيها الصورة
 }
 
 function pollForOpenRouterResult(predictionId) {
@@ -586,45 +568,34 @@ function pollForOpenRouterResult(predictionId) {
 
 function downloadOpenRouterResult(response) {
     try {
-        // حاول نفك JSON
         var json = null;
         try { json = eval('(' + response + ')'); } catch (e) { json = null; }
 
         var imageUrl = null;
 
-        // 1) لو JSON منسّق، جرّب المسارات الشائعة
         if (json && json.choices && json.choices.length > 0) {
             var msg = json.choices[0].message;
             if (msg) {
-                // images array (بعض النماذج ترجعها)
                 if (msg.images && msg.images.length > 0) {
                     var img = msg.images[0];
                     if (img) {
                         if (img.image_url && img.image_url.url) imageUrl = img.image_url.url;
-                        else if (img.image_url) imageUrl = img.image_url;  // قد تكون data: أو URL مباشرة
+                        else if (img.image_url) imageUrl = img.image_url;
                     }
                 }
-
-                // محتوى داخل content
                 if (!imageUrl && msg.content) {
-                    // إن كان object، جرّب نقرأ image_url منه
                     if (typeof msg.content !== "string") {
                         try {
                             if (msg.content.image_url) imageUrl = msg.content.image_url;
                         } catch (e) {}
                     }
-
-                    // إن كان string، نفذ بحث آمن بسلاسل RegExp
                     if (!imageUrl && typeof msg.content === "string") {
                         var contentStr = msg.content;
-
-                        // ابحث أولاً عن data URI
                         var dataUriRe = new RegExp("(data:image\\/[A-Za-z0-9+]+;base64,[A-Za-z0-9+\\/=]+)");
                         var m1 = dataUriRe.exec(contentStr);
                         if (m1 && m1[1]) {
                             imageUrl = m1[1];
                         } else {
-                            // ثم ابحث عن رابط http(s) لصورة
                             var urlRe = new RegExp("https?:\\/\\/[^\"'\\s]+\\.(?:jpg|jpeg|png|webp)(?:\\?[^\"'\\s]*)?", "i");
                             var m2 = urlRe.exec(contentStr);
                             if (m2 && m2[0]) imageUrl = m2[0];
@@ -634,7 +605,6 @@ function downloadOpenRouterResult(response) {
             }
         }
 
-        // 2)fallback: فتّش النص الخام
         if (!imageUrl && typeof response === "string") {
             var dataUriRe2 = new RegExp("(data:image\\/[A-Za-z0-9+]+;base64,[A-Za-z0-9+\\/=]+)");
             var m3 = dataUriRe2.exec(response);
@@ -648,16 +618,13 @@ function downloadOpenRouterResult(response) {
         }
 
         if (!imageUrl) {
-            // مفيش صورة في الرد
             return null;
         }
 
-        // 3) نزّل/حوّل النتيجة إلى ملف مؤقت
         var timestamp = new Date().getTime();
         var resultFile = new File(Folder.temp + "/openrouter_result_" + timestamp + ".jpg");
 
         if (imageUrl.indexOf("data:image/") === 0) {
-            // data URI → base64 إلى ملف ثنائي
             var b64file = new File(Folder.temp + "/tmp_b64_" + timestamp + ".txt");
             b64file.open("w");
             b64file.write(imageUrl.replace(/^data:image\/[A-Za-z0-9+]+;base64,/, ""));
@@ -667,13 +634,13 @@ function downloadOpenRouterResult(response) {
                 var decCmd = 'cmd.exe /c certutil -decode "' + b64file.fsName + '" "' + resultFile.fsName + '"';
                 app.system(decCmd);
             } else {
-                var decCmd = '/bin/sh -c \'base64 -d "' + b64file.fsName + '" > "' + resultFile.fsName + '"\'';
+                var decCmd = '/bin/sh -c \'/usr/bin/base64 -D -i "' + b64file.fsName + '" > "' + resultFile.fsName + '"\'';
+
                 app.system(decCmd);
             }
             b64file.remove();
         } else {
-            // URL مباشر
-            var curlCmd = getCurlCommand('curl -s -L "' + imageUrl + '"', resultFile.fsName, true);
+            var curlCmd = getCurlCommand('curl -s -L --max-time 180 "' + imageUrl + '"', resultFile.fsName, true);
             app.system(curlCmd);
         }
 
@@ -687,8 +654,7 @@ function downloadOpenRouterResult(response) {
     }
 }
 
-
-// ===== Upscale (Real-ESRGAN) - unchanged logic from original =====
+// ===== Upscale logic (unchanged) =====
 
 function upscaleImage(imageFile) {
     try {
@@ -728,11 +694,11 @@ function upscaleImage(imageFile) {
 
         var responseFile = new File(Folder.temp + "/upscale_response_" + new Date().getTime() + ".json");
         var curlCmd = getCurlCommand(
-            'curl -s -X POST ' +
+            'curl -s --max-time 180 -X POST ' +
             '-H "Authorization: Bearer ' + CONFIG.API_KEY + '" ' +
             '-H "Content-Type: application/json" ' +
             '-d @"' + payloadFile.fsName + '" ' +
-            '"https://api.replicate.com/v1/predictions"', // keep replicate upscale if you still use it; change if you use different service
+            '"https://api.replicate.com/v1/predictions"',
             responseFile.fsName
         );
         app.system(curlCmd);
@@ -747,11 +713,9 @@ function upscaleImage(imageFile) {
             var predictionId = extractPredictionId(response);
             if (predictionId && response.indexOf('"status":"starting"') > -1) {
                 var upscaledFile = pollForUpscaleResult(predictionId);
-                if (upscaledFile && upscaledFile.exists) {
-                    if (upscaledFile.length > originalSize) {
-                        imageFile.remove();
-                        return upscaledFile;
-                    }
+                if (upscaledFile && upscaledFile.exists && upscaledFile.length > originalSize) {
+                    imageFile.remove();
+                    return upscaledFile;
                 }
             } else if (response.indexOf('"status":"succeeded"') > -1) {
                 var upscaledFile = downloadOpenRouterResult(response);
